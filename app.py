@@ -5,10 +5,9 @@ import logging
 import time
 from datetime import datetime
 
-import numpy as np
+import httpx
 import pandas as pd
 import pytz
-import yfinance as yf
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -23,6 +22,11 @@ app.add_middleware(
 )
 
 IST = pytz.timezone("Asia/Kolkata")
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+}
 
 # ── Stock definitions ──────────────────────────────────────────────────────────
 
@@ -62,14 +66,89 @@ STOCKS = {
 
 # ── In-memory cache ────────────────────────────────────────────────────────────
 
-_cache = {"data": None, "timestamp": 0}
-CACHE_TTL = 120  # seconds
+_cache: dict = {"data": None, "timestamp": 0}
+CACHE_TTL = 300  # 5 minutes — reduces Yahoo API calls
 
 
-# ── Calculation helpers ────────────────────────────────────────────────────────
+# ── Yahoo Finance direct HTTP fetcher with retry ──────────────────────────────
+
+def fetch_chart(ticker: str, client: httpx.Client) -> dict | None:
+    """Fetch 1Y daily OHLCV with retry across query1/query2 endpoints."""
+    params = {"range": "1y", "interval": "1d", "includePrePost": "false"}
+
+    for base in [
+        "https://query1.finance.yahoo.com/v8/finance/chart",
+        "https://query2.finance.yahoo.com/v8/finance/chart",
+    ]:
+        url = f"{base}/{ticker}"
+        for attempt in range(3):
+            try:
+                r = client.get(url, params=params)
+                if r.status_code == 429:
+                    wait = (attempt + 1) * 2
+                    logger.warning(f"429 for {ticker} on {base}, waiting {wait}s (attempt {attempt+1})")
+                    time.sleep(wait)
+                    continue
+                r.raise_for_status()
+                data = r.json()
+                result = data.get("chart", {}).get("result")
+                if result:
+                    return result[0]
+                logger.warning(f"No chart result for {ticker}")
+                return None
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    time.sleep((attempt + 1) * 2)
+                    continue
+                logger.error(f"HTTP error for {ticker}: {e}")
+                break
+            except Exception as e:
+                logger.error(f"Error for {ticker}: {e}")
+                break
+    return None
+
+
+def chart_to_technicals(symbol: str, chart_data: dict) -> dict | None:
+    """Convert Yahoo chart API response to technicals dict."""
+    try:
+        quote = chart_data.get("indicators", {}).get("quote", [{}])[0]
+        closes_raw = quote.get("close", [])
+        highs_raw = quote.get("high", [])
+        lows_raw = quote.get("low", [])
+
+        valid = [(c, h, l) for c, h, l in zip(closes_raw, highs_raw, lows_raw)
+                 if c is not None and h is not None and l is not None]
+        if len(valid) < 20:
+            return None
+
+        closes = [v[0] for v in valid]
+        highs = [v[1] for v in valid]
+        lows = [v[2] for v in valid]
+
+        closes_s = pd.Series(closes)
+        current = closes[-1]
+        prev_close = closes[-2] if len(closes) > 1 else current
+
+        return {
+            "symbol": symbol,
+            "ticker": f"{symbol}.NS",
+            "price": round(current, 2),
+            "prev_close": round(prev_close, 2),
+            "change_pct": round(((current - prev_close) / prev_close) * 100, 2),
+            "high_52w": round(max(highs), 2),
+            "low_52w": round(min(lows), 2),
+            "pct_from_high": round(((current - max(highs)) / max(highs)) * 100, 2),
+            "sma_50": round(float(closes_s.tail(50).mean()), 2) if len(closes_s) >= 50 else None,
+            "sma_200": round(float(closes_s.tail(200).mean()), 2) if len(closes_s) >= 200 else None,
+            "rsi": calc_rsi(closes_s) if len(closes_s) >= 20 else None,
+        }
+    except Exception as e:
+        logger.error(f"Error processing {symbol}: {e}")
+        return None
+
 
 def calc_rsi(closes: pd.Series, period: int = 14) -> float:
-    """Compute RSI from closing prices using Wilder's smoothing."""
+    """Compute RSI using Wilder's smoothing."""
     delta = closes.diff()
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
@@ -80,120 +159,54 @@ def calc_rsi(closes: pd.Series, period: int = 14) -> float:
         avg_loss = (avg_loss * (period - 1) + loss.iloc[i]) / period
     if avg_loss == 0:
         return 100.0
-    rs = avg_gain / avg_loss
-    return round(100 - (100 / (1 + rs)), 2)
-
-
-def process_ticker(symbol: str, hist_df: pd.DataFrame) -> dict | None:
-    """Process downloaded history for a single ticker into technicals."""
-    try:
-        if hist_df.empty:
-            logger.warning(f"Empty history for {symbol}")
-            return None
-
-        closes = hist_df["Close"]
-        highs = hist_df["High"]
-        lows = hist_df["Low"]
-
-        current = float(closes.iloc[-1])
-        prev_close = float(closes.iloc[-2]) if len(closes) > 1 else current
-        change_pct = round(((current - prev_close) / prev_close) * 100, 2)
-
-        high_52w = float(highs.max())
-        low_52w = float(lows.min())
-        pct_from_high = round(((current - high_52w) / high_52w) * 100, 2)
-
-        sma_50 = float(closes.tail(50).mean()) if len(closes) >= 50 else None
-        sma_200 = float(closes.tail(200).mean()) if len(closes) >= 200 else None
-
-        rsi = calc_rsi(closes) if len(closes) >= 20 else None
-
-        return {
-            "symbol": symbol,
-            "ticker": f"{symbol}.NS",
-            "price": round(current, 2),
-            "prev_close": round(prev_close, 2),
-            "change_pct": change_pct,
-            "high_52w": round(high_52w, 2),
-            "low_52w": round(low_52w, 2),
-            "pct_from_high": pct_from_high,
-            "sma_50": round(sma_50, 2) if sma_50 else None,
-            "sma_200": round(sma_200, 2) if sma_200 else None,
-            "rsi": rsi,
-        }
-    except Exception as e:
-        logger.error(f"Error processing {symbol}: {e}")
-        return None
+    return round(100 - (100 / (1 + avg_gain / avg_loss)), 2)
 
 
 def fetch_all_data() -> dict:
-    """Batch-download all tickers in one yf.download() call and compute technicals."""
-    # Collect unique symbols
+    """Fetch all tickers with delays between requests."""
     all_symbols = set()
     for group in STOCKS.values():
         for s in group:
             all_symbols.add(s["symbol"])
 
-    ns_tickers = [f"{sym}.NS" for sym in sorted(all_symbols)]
-    nifty_ticker = "^NSEI"
-    all_tickers = ns_tickers + [nifty_ticker]
+    tickers = [(f"{sym}.NS", sym) for sym in sorted(all_symbols)]
+    tickers.append(("^NSEI", None))
 
-    logger.info(f"Downloading {len(all_tickers)} tickers: {all_tickers}")
+    logger.info(f"Fetching {len(tickers)} tickers")
 
-    try:
-        raw = yf.download(
-            tickers=all_tickers,
-            period="1y",
-            group_by="ticker",
-            threads=True,
-            progress=False,
-        )
-        logger.info(f"Download complete. Shape: {raw.shape}, Columns type: {type(raw.columns)}")
-    except Exception as e:
-        logger.error(f"yf.download failed: {e}")
-        return {"cache": {}, "nifty": None}
-
-    cache = {}
+    stock_cache = {}
     nifty = None
 
-    # Handle both single-ticker (flat columns) and multi-ticker (MultiIndex) results
-    if isinstance(raw.columns, pd.MultiIndex):
-        # Multi-ticker: columns are (TICKER, OHLCV)
-        for ticker_str in all_tickers:
-            try:
-                ticker_data = raw[ticker_str].dropna(how="all")
-                if ticker_data.empty:
-                    logger.warning(f"No data for {ticker_str} in batch download")
-                    continue
+    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=20) as client:
+        for i, (ticker, symbol) in enumerate(tickers):
+            # Small delay between requests to avoid rate limiting
+            if i > 0:
+                time.sleep(0.5)
 
-                if ticker_str == nifty_ticker:
-                    nifty = _process_nifty(ticker_data)
-                else:
-                    symbol = ticker_str.replace(".NS", "")
-                    result = process_ticker(symbol, ticker_data)
-                    if result:
-                        cache[symbol] = result
-            except KeyError:
-                logger.warning(f"Ticker {ticker_str} not found in download result")
-            except Exception as e:
-                logger.error(f"Error extracting {ticker_str}: {e}")
-    else:
-        # Single ticker edge case — shouldn't happen with 16+ tickers
-        logger.warning("Got flat columns instead of MultiIndex — single ticker mode")
+            chart_data = fetch_chart(ticker, client)
+            if not chart_data:
+                continue
 
-    logger.info(f"Processed {len(cache)} stock tickers, nifty={'OK' if nifty else 'FAILED'}")
-    return {"cache": cache, "nifty": nifty}
+            if ticker == "^NSEI":
+                nifty = _process_nifty_chart(chart_data)
+            elif symbol:
+                result = chart_to_technicals(symbol, chart_data)
+                if result:
+                    stock_cache[symbol] = result
+
+    logger.info(f"Fetched {len(stock_cache)}/{len(tickers)-1} stocks, nifty={'OK' if nifty else 'FAILED'}")
+    return {"cache": stock_cache, "nifty": nifty}
 
 
-def _process_nifty(hist: pd.DataFrame) -> dict | None:
-    """Process Nifty 50 data from batch download."""
+def _process_nifty_chart(chart_data: dict) -> dict | None:
     try:
-        closes = hist["Close"].dropna()
-        if closes.empty:
+        quote = chart_data.get("indicators", {}).get("quote", [{}])[0]
+        closes = [c for c in quote.get("close", []) if c is not None]
+        if len(closes) < 2:
             return None
-        current = float(closes.iloc[-1])
-        prev = float(closes.iloc[-2]) if len(closes) > 1 else current
-        sma_200 = float(closes.tail(200).mean()) if len(closes) >= 200 else None
+        current, prev = closes[-1], closes[-2]
+        closes_s = pd.Series(closes)
+        sma_200 = float(closes_s.tail(200).mean()) if len(closes_s) >= 200 else None
         mood = "Neutral"
         if sma_200:
             if current > sma_200 * 1.02:
@@ -207,62 +220,39 @@ def _process_nifty(hist: pd.DataFrame) -> dict | None:
             "mood": mood,
         }
     except Exception as e:
-        logger.error(f"Error processing Nifty: {e}")
+        logger.error(f"Nifty error: {e}")
         return None
 
 
-def entry_signal_swing(data: dict, entry_low: float | None, entry_high: float | None, sl: float | None) -> str:
-    """Compute entry signal for swing/active stocks with defined entry zones."""
-    price = data["price"]
-    rsi = data["rsi"]
-    sma_200 = data["sma_200"]
-    sma_50 = data["sma_50"]
+# ── Signal logic ───────────────────────────────────────────────────────────────
+
+def entry_signal_swing(data, entry_low, entry_high, sl):
+    price, rsi, sma_200, sma_50 = data["price"], data["rsi"], data["sma_200"], data["sma_50"]
     pct_from_high = abs(data["pct_from_high"])
 
     if sl and price < sl:
         return "AVOID"
-
     if entry_low is None or entry_high is None:
         return entry_signal_peg(data)
 
-    at_or_below_entry = price <= entry_high * 1.02
-    within_3pct = price <= entry_high * 1.03
+    if rsi and sma_200 and price <= entry_high * 1.02 and rsi < 45 and price < sma_200 and pct_from_high > 10:
+        return "STRONG BUY"
 
-    # STRONG BUY
-    if rsi and sma_200:
-        if at_or_below_entry and rsi < 45 and price < sma_200 and pct_from_high > 10:
-            return "STRONG BUY"
-
-    # GOOD TO ADD — any 2 of 4 conditions
-    conditions = 0
-    if rsi and 45 <= rsi <= 55:
-        conditions += 1
-    if within_3pct:
-        conditions += 1
-    if sma_200 and sma_50 and sma_200 <= price <= sma_50:
-        conditions += 1
-    if 5 <= pct_from_high <= 10:
-        conditions += 1
+    conditions = sum([
+        bool(rsi and 45 <= rsi <= 55),
+        price <= entry_high * 1.03,
+        bool(sma_200 and sma_50 and sma_200 <= price <= sma_50),
+        5 <= pct_from_high <= 10,
+    ])
     if conditions >= 2:
         return "GOOD TO ADD"
-
-    if rsi and rsi > 60:
-        return "WAIT"
-    if price > entry_high:
-        return "WAIT"
-
     return "WAIT"
 
 
-def entry_signal_peg(data: dict) -> str:
-    """Compute entry signal for PEG watchlist stocks (no entry zone)."""
-    rsi = data["rsi"]
-    sma_200 = data["sma_200"]
-    price = data["price"]
-
+def entry_signal_peg(data):
+    rsi, sma_200, price = data["rsi"], data["sma_200"], data["price"]
     if rsi is None:
         return "WAIT"
-
     if rsi < 40 and sma_200 and price < sma_200:
         return "STRONG BUY"
     if 40 <= rsi <= 55:
@@ -270,117 +260,104 @@ def entry_signal_peg(data: dict) -> str:
     return "WAIT"
 
 
-def is_market_open() -> bool:
-    """Check if Indian stock market is currently open."""
+def is_market_open():
     now = datetime.now(IST)
     if now.weekday() >= 5:
         return False
-    market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
-    return market_open <= now <= market_close
+    return now.replace(hour=9, minute=15, second=0) <= now <= now.replace(hour=15, minute=30, second=0)
 
 
-# ── API endpoint ───────────────────────────────────────────────────────────────
+# ── API endpoints ─────────────────────────────────────────────────────────────
 
 @app.get("/api/stocks")
 def get_stocks():
     global _cache
     now = datetime.now(IST)
 
-    # Return cached data if fresh enough
     if _cache["data"] and (time.time() - _cache["timestamp"]) < CACHE_TTL:
         logger.info("Serving from cache")
-        result = _cache["data"]
+        result = _cache["data"].copy()
         result["timestamp"] = now.strftime("%Y-%m-%d %H:%M:%S IST")
         result["market_open"] = is_market_open()
         return result
 
     logger.info("Cache miss — fetching fresh data")
     fetched = fetch_all_data()
-    stock_cache = fetched["cache"]
-    nifty = fetched["nifty"]
+    sc = fetched["cache"]
 
-    # Build active positions
     active = []
     for s in STOCKS["active"]:
-        data = stock_cache.get(s["symbol"])
+        data = sc.get(s["symbol"])
         if not data:
             continue
-        entry_low = s.get("entry") or s.get("entry_low")
-        entry_high = s.get("entry") or s.get("entry_high")
-        signal = entry_signal_swing(data, entry_low, entry_high, s.get("sl"))
-
-        item = {
-            **data,
-            "name": s["name"],
-            "entry": s.get("entry"),
-            "avg_cost": s.get("avg_cost"),
-            "qty": s.get("qty"),
-            "sl": s.get("sl"),
-            "t1": s.get("t1"),
-            "t2": s.get("t2"),
-            "add_alert": s.get("add_alert"),
-            "signal": signal,
-        }
+        signal = entry_signal_swing(data, s.get("entry") or s.get("entry_low"),
+                                     s.get("entry") or s.get("entry_high"), s.get("sl"))
+        item = {**data, "name": s["name"], "entry": s.get("entry"),
+                "avg_cost": s.get("avg_cost"), "qty": s.get("qty"),
+                "sl": s.get("sl"), "t1": s.get("t1"), "t2": s.get("t2"),
+                "add_alert": s.get("add_alert"), "signal": signal}
         if s.get("avg_cost") and s.get("qty"):
-            invested = s["avg_cost"] * s["qty"]
-            current_val = data["price"] * s["qty"]
-            item["pnl_abs"] = round(current_val - invested, 2)
-            item["pnl_pct"] = round(((current_val - invested) / invested) * 100, 2)
+            inv = s["avg_cost"] * s["qty"]
+            cur = data["price"] * s["qty"]
+            item["pnl_abs"] = round(cur - inv, 2)
+            item["pnl_pct"] = round(((cur - inv) / inv) * 100, 2)
         elif s.get("avg_cost"):
             item["pnl_abs"] = round(data["price"] - s["avg_cost"], 2)
             item["pnl_pct"] = round(((data["price"] - s["avg_cost"]) / s["avg_cost"]) * 100, 2)
         active.append(item)
 
-    # Build swing watchlist
     swing = []
     for s in STOCKS["swing"]:
-        data = stock_cache.get(s["symbol"])
+        data = sc.get(s["symbol"])
         if not data:
             continue
         signal = entry_signal_swing(data, s.get("entry_low"), s.get("entry_high"), s.get("sl"))
-        swing.append({
-            **data,
-            "name": s["name"],
-            "entry_low": s.get("entry_low"),
-            "entry_high": s.get("entry_high"),
-            "sl": s.get("sl"),
-            "t1": s.get("t1"),
-            "signal": signal,
-        })
+        swing.append({**data, "name": s["name"], "entry_low": s.get("entry_low"),
+                       "entry_high": s.get("entry_high"), "sl": s.get("sl"),
+                       "t1": s.get("t1"), "signal": signal})
 
-    # Build PEG watchlist
     peg = []
     for s in STOCKS["peg"]:
-        data = stock_cache.get(s["symbol"])
+        data = sc.get(s["symbol"])
         if not data:
             continue
-        signal = entry_signal_peg(data)
-        peg.append({
-            **data,
-            "name": s["name"],
-            "peg": s["peg"],
-            "signal": signal,
-        })
+        peg.append({**data, "name": s["name"], "peg": s["peg"],
+                     "signal": entry_signal_peg(data)})
 
     result = {
         "timestamp": now.strftime("%Y-%m-%d %H:%M:%S IST"),
         "market_open": is_market_open(),
-        "nifty": nifty,
-        "active": active,
-        "swing": swing,
-        "peg": peg,
+        "nifty": fetched["nifty"],
+        "active": active, "swing": swing, "peg": peg,
     }
 
-    # Update cache
     _cache = {"data": result, "timestamp": time.time()}
     logger.info(f"Response: active={len(active)}, swing={len(swing)}, peg={len(peg)}")
     return result
 
 
+@app.get("/api/debug")
+def debug():
+    """Connectivity test with single ticker."""
+    results = {"method": "query1 chart API", "time": datetime.now(IST).isoformat()}
+    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=20) as client:
+        for ticker in ["BPCL.NS", "^NSEI"]:
+            try:
+                chart = fetch_chart(ticker, client)
+                if chart:
+                    quote = chart.get("indicators", {}).get("quote", [{}])[0]
+                    closes = [c for c in quote.get("close", []) if c is not None]
+                    results[ticker] = {"status": "OK", "points": len(closes),
+                                       "last": round(closes[-1], 2) if closes else None}
+                else:
+                    results[ticker] = {"status": "NO_DATA"}
+            except Exception as e:
+                results[ticker] = {"status": "ERROR", "msg": str(e)}
+    return results
+
+
 # Serve frontend
 app.mount("/static", StaticFiles(directory="static"), name="static")
-
 
 @app.get("/")
 def serve_frontend():
