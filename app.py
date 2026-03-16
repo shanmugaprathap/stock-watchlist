@@ -331,7 +331,11 @@ def get_stocks():
         "active": active, "swing": swing, "peg": peg,
     }
 
-    _cache = {"data": result, "timestamp": time.time()}
+    # Only cache if we got actual data
+    if active or swing or peg:
+        _cache = {"data": result, "timestamp": time.time()}
+    else:
+        logger.warning("Empty result — not caching")
     logger.info(f"Response: active={len(active)}, swing={len(swing)}, peg={len(peg)}")
     return result
 
