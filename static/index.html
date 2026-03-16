@@ -178,6 +178,21 @@ async function fetchData() {
     const res = await fetch('/api/stocks');
     const data = await res.json();
 
+    // Check if data is empty (yfinance failed on server)
+    if (data.active.length === 0 && data.swing.length === 0 && data.peg.length === 0) {
+      document.getElementById('loading').innerHTML = `
+        <div style="color:var(--yellow)">
+          <p style="font-size:18px;margin-bottom:8px">Data fetch in progress...</p>
+          <p style="font-size:13px;color:var(--text2)">Yahoo Finance may be slow to respond. Auto-retrying in 30s.</p>
+          <p style="font-size:12px;color:var(--text2);margin-top:12px">
+            Debug: <a href="/api/stocks" style="color:var(--blue)" target="_blank">/api/stocks</a>
+            &mdash; Timestamp: ${data.timestamp}
+          </p>
+        </div>`;
+      setTimeout(fetchData, 30000);
+      return;
+    }
+
     // Nifty strip
     if (data.nifty) {
       const n = data.nifty;
