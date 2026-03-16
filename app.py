@@ -33,9 +33,20 @@ HEADERS = {
 STOCKS = {
     "active": [
         {
+            "symbol": "GOLDBEES", "name": "Gold ETF (GoldBees)",
+            "entry": None, "sl": None, "t1": None, "t2": None,
+            "qty": 307, "avg_cost": 73.27, "peg": None,  # ETF — no PEG
+            "note": "Zerodha 205@71.11 + Dhan 102@77.61",
+        },
+        {
             "symbol": "SILVERBEES", "name": "Silver ETF (SilverBees)",
             "entry": 248.99, "sl": 232, "t1": 262, "t2": 278,
             "qty": None, "avg_cost": 248.99, "peg": None,  # ETF — no PEG
+        },
+        {
+            "symbol": "SILVERCASE", "name": "Silver Case ETF (IndMoney)",
+            "entry": None, "sl": None, "t1": None, "t2": None,
+            "qty": 1000, "avg_cost": 15.30, "peg": None,  # ETF — no PEG
         },
         {
             "symbol": "KARURVYSYA", "name": "Karur Vysya Bank",
@@ -295,7 +306,8 @@ def get_stocks():
         item = {**data, "name": s["name"], "entry": s.get("entry"),
                 "avg_cost": s.get("avg_cost"), "qty": s.get("qty"),
                 "sl": s.get("sl"), "t1": s.get("t1"), "t2": s.get("t2"),
-                "add_alert": s.get("add_alert"), "peg": s.get("peg"), "signal": signal}
+                "add_alert": s.get("add_alert"), "peg": s.get("peg"),
+                "note": s.get("note"), "signal": signal}
         if s.get("avg_cost") and s.get("qty"):
             inv = s["avg_cost"] * s["qty"]
             cur = data["price"] * s["qty"]

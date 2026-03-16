@@ -145,6 +145,7 @@ function buildCard(s, type) {
     if (s.t1) metricsHtml += `<div class="metric"><span class="metric-label">T1</span><span class="metric-value" style="color:var(--green)">${INR(s.t1)}</span></div>`;
     if (s.t2) metricsHtml += `<div class="metric"><span class="metric-label">T2</span><span class="metric-value" style="color:var(--green)">${INR(s.t2)}</span></div>`;
     if (s.add_alert) metricsHtml += `<div class="metric"><span class="metric-label">Add Alert</span><span class="metric-value" style="color:var(--teal)">${INR(s.add_alert)}</span></div>`;
+    if (s.note) metricsHtml += `<div class="metric" style="grid-column:1/-1"><span class="metric-label">Broker</span><span class="metric-value" style="font-size:11px">${s.note}</span></div>`;
   } else if (type === 'swing') {
     if (s.entry_low && s.entry_high) metricsHtml += `<div class="metric"><span class="metric-label">Entry Zone</span><span class="metric-value">${INR(s.entry_low)} - ${INR(s.entry_high)}</span></div>`;
     if (s.sl) metricsHtml += `<div class="metric"><span class="metric-label">SL</span><span class="metric-value" style="color:var(--red)">${INR(s.sl)}</span></div>`;
