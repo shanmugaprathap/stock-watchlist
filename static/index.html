@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stock Watchlist</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --surface2: #242837;
+    --border: #2e3347; --text: #e4e6f0; --text2: #8b8fa3;
+    --green: #00c853; --red: #ff1744; --yellow: #ffd600; --teal: #00bfa5;
+    --blue: #448aff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5; }
+
+  .nifty-strip { background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 10px 20px; display: flex; align-items: center; gap: 20px;
+    flex-wrap: wrap; position: sticky; top: 0; z-index: 10; }
+  .nifty-strip .label { font-weight: 600; font-size: 14px; }
+  .nifty-strip .value { font-size: 18px; font-weight: 700; }
+  .nifty-strip .change { font-size: 14px; font-weight: 600; }
+  .mood-badge { padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+  .mood-Bullish { background: rgba(0,200,83,0.15); color: var(--green); }
+  .mood-Neutral { background: rgba(255,214,0,0.15); color: var(--yellow); }
+  .mood-Bearish { background: rgba(255,23,68,0.15); color: var(--red); }
+
+  .market-banner { text-align: center; padding: 6px; font-size: 13px; font-weight: 600; }
+  .banner-closed { background: rgba(255,23,68,0.12); color: var(--red); }
+  .banner-open { background: rgba(0,200,83,0.12); color: var(--green); }
+
+  .container { max-width: 1400px; margin: 0 auto; padding: 16px; }
+  .timestamp { text-align: right; color: var(--text2); font-size: 12px; margin-bottom: 12px; }
+
+  h2 { font-size: 18px; margin: 20px 0 12px; color: var(--text2);
+    border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+
+  .card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px; transition: border-color 0.2s; }
+  .card:hover { border-color: var(--blue); }
+
+  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .card-symbol { font-size: 16px; font-weight: 700; }
+  .card-name { font-size: 12px; color: var(--text2); }
+
+  .price-row { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+  .price { font-size: 22px; font-weight: 700; }
+  .change-up { color: var(--green); }
+  .change-down { color: var(--red); }
+  .change-neutral { color: var(--text2); }
+
+  .signal { display: inline-block; padding: 3px 10px; border-radius: 12px;
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+  .signal-strong-buy { background: rgba(0,200,83,0.18); color: var(--green); }
+  .signal-good-to-add { background: rgba(0,191,165,0.18); color: var(--teal); }
+  .signal-wait { background: rgba(255,214,0,0.15); color: var(--yellow); }
+  .signal-avoid { background: rgba(255,23,68,0.18); color: var(--red); }
+
+  .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 12px; }
+  .metric { display: flex; justify-content: space-between; }
+  .metric-label { color: var(--text2); }
+  .metric-value { font-weight: 500; }
+
+  .rsi-green { color: var(--green); }
+  .rsi-yellow { color: var(--yellow); }
+  .rsi-red { color: var(--red); }
+
+  .pnl-row { margin-top: 8px; padding: 8px; border-radius: 6px;
+    font-size: 13px; font-weight: 600; display: flex; justify-content: space-between; }
+  .pnl-positive { background: rgba(0,200,83,0.1); color: var(--green); }
+  .pnl-negative { background: rgba(255,23,68,0.1); color: var(--red); }
+
+  .sma-above { color: var(--green); }
+  .sma-below { color: var(--red); }
+
+  .loading { text-align: center; padding: 60px; color: var(--text2); font-size: 16px; }
+  .spinner { display: inline-block; width: 24px; height: 24px;
+    border: 3px solid var(--border); border-top-color: var(--blue);
+    border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px;
+    vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  @media (max-width: 600px) {
+    .grid { grid-template-columns: 1fr; }
+    .nifty-strip { justify-content: center; }
+    .price { font-size: 18px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="nifty-strip" class="nifty-strip" style="display:none"></div>
+<div id="market-banner" class="market-banner" style="display:none"></div>
+
+<div class="container">
+  <div id="timestamp" class="timestamp"></div>
+  <div id="loading" class="loading"><span class="spinner"></span>Loading stock data...</div>
+
+  <div id="content" style="display:none">
+    <h2>Active Positions</h2>
+    <div id="active-grid" class="grid"></div>
+
+    <h2>Swing Watchlist</h2>
+    <div id="swing-grid" class="grid"></div>
+
+    <h2>PEG Watchlist</h2>
+    <div id="peg-grid" class="grid"></div>
+  </div>
+</div>
+
+<script>
+const INR = v => v != null ? '\u20B9' + Number(v).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '\u2014';
+const PCT = v => v != null ? (v >= 0 ? '+' : '') + v.toFixed(2) + '%' : '\u2014';
+const changeCls = v => v > 0 ? 'change-up' : v < 0 ? 'change-down' : 'change-neutral';
+const rsiCls = v => v == null ? '' : v < 45 ? 'rsi-green' : v > 60 ? 'rsi-red' : 'rsi-yellow';
+const signalCls = s => 'signal signal-' + s.toLowerCase().replace(/\s+/g, '-');
+const smaCls = (price, sma) => price > sma ? 'sma-above' : 'sma-below';
+
+function smaLabel(price, sma) {
+  if (!sma) return '\u2014';
+  const pct = ((price - sma) / sma * 100).toFixed(1);
+  return (price > sma ? 'Above ' : 'Below ') + Math.abs(pct) + '%';
+}
+
+function buildCard(s, type) {
+  let metricsHtml = `
+    <div class="metric"><span class="metric-label">52W High</span><span class="metric-value">${INR(s.high_52w)}</span></div>
+    <div class="metric"><span class="metric-label">52W Low</span><span class="metric-value">${INR(s.low_52w)}</span></div>
+    <div class="metric"><span class="metric-label">% from High</span><span class="metric-value ${changeCls(s.pct_from_high)}">${PCT(s.pct_from_high)}</span></div>
+    <div class="metric"><span class="metric-label">RSI (14)</span><span class="metric-value ${rsiCls(s.rsi)}">${s.rsi != null ? s.rsi.toFixed(1) : '\u2014'}</span></div>
+    <div class="metric"><span class="metric-label">vs 50 SMA</span><span class="metric-value ${s.sma_50 ? smaCls(s.price, s.sma_50) : ''}">${smaLabel(s.price, s.sma_50)}</span></div>
+    <div class="metric"><span class="metric-label">vs 200 SMA</span><span class="metric-value ${s.sma_200 ? smaCls(s.price, s.sma_200) : ''}">${smaLabel(s.price, s.sma_200)}</span></div>`;
+
+  if (type === 'active') {
+    if (s.entry) metricsHtml += `<div class="metric"><span class="metric-label">Entry</span><span class="metric-value">${INR(s.entry)}</span></div>`;
+    if (s.avg_cost) metricsHtml += `<div class="metric"><span class="metric-label">Avg Cost</span><span class="metric-value">${INR(s.avg_cost)}</span></div>`;
+    if (s.qty) metricsHtml += `<div class="metric"><span class="metric-label">Qty</span><span class="metric-value">${s.qty}</span></div>`;
+    if (s.sl) metricsHtml += `<div class="metric"><span class="metric-label">SL</span><span class="metric-value" style="color:var(--red)">${INR(s.sl)}</span></div>`;
+    if (s.t1) metricsHtml += `<div class="metric"><span class="metric-label">T1</span><span class="metric-value" style="color:var(--green)">${INR(s.t1)}</span></div>`;
+    if (s.t2) metricsHtml += `<div class="metric"><span class="metric-label">T2</span><span class="metric-value" style="color:var(--green)">${INR(s.t2)}</span></div>`;
+    if (s.add_alert) metricsHtml += `<div class="metric"><span class="metric-label">Add Alert</span><span class="metric-value" style="color:var(--teal)">${INR(s.add_alert)}</span></div>`;
+  } else if (type === 'swing') {
+    if (s.entry_low && s.entry_high) metricsHtml += `<div class="metric"><span class="metric-label">Entry Zone</span><span class="metric-value">${INR(s.entry_low)} - ${INR(s.entry_high)}</span></div>`;
+    if (s.sl) metricsHtml += `<div class="metric"><span class="metric-label">SL</span><span class="metric-value" style="color:var(--red)">${INR(s.sl)}</span></div>`;
+    if (s.t1) metricsHtml += `<div class="metric"><span class="metric-label">T1</span><span class="metric-value" style="color:var(--green)">${INR(s.t1)}</span></div>`;
+  } else if (type === 'peg') {
+    if (s.peg != null) metricsHtml += `<div class="metric"><span class="metric-label">PEG Ratio</span><span class="metric-value" style="color:${s.peg < 1 ? 'var(--green)' : 'var(--yellow)'}">${s.peg.toFixed(2)}</span></div>`;
+  }
+
+  let pnlHtml = '';
+  if (type === 'active' && s.pnl_abs != null) {
+    const cls = s.pnl_abs >= 0 ? 'pnl-positive' : 'pnl-negative';
+    const totalPnl = s.qty ? INR(s.pnl_abs) : INR(s.pnl_abs) + '/unit';
+    pnlHtml = `<div class="pnl-row ${cls}">
+      <span>P&L: ${totalPnl}</span><span>${PCT(s.pnl_pct)}</span>
+    </div>`;
+  }
+
+  return `<div class="card">
+    <div class="card-header">
+      <div><div class="card-symbol">${s.symbol}</div><div class="card-name">${s.name}</div></div>
+      <span class="${signalCls(s.signal)}">${s.signal}</span>
+    </div>
+    <div class="price-row">
+      <span class="price">${INR(s.price)}</span>
+      <span class="${changeCls(s.change_pct)}">${PCT(s.change_pct)}</span>
+    </div>
+    <div class="metrics">${metricsHtml}</div>
+    ${pnlHtml}
+  </div>`;
+}
+
+async function fetchData() {
+  try {
+    const res = await fetch('/api/stocks');
+    const data = await res.json();
+
+    // Nifty strip
+    if (data.nifty) {
+      const n = data.nifty;
+      const strip = document.getElementById('nifty-strip');
+      strip.style.display = 'flex';
+      strip.innerHTML = `
+        <span class="label">NIFTY 50</span>
+        <span class="value">${n.level.toLocaleString('en-IN')}</span>
+        <span class="change ${changeCls(n.change_pct)}">${PCT(n.change_pct)}</span>
+        <span class="mood-badge mood-${n.mood}">${n.mood}</span>
+        ${n.sma_200 ? `<span style="font-size:12px;color:var(--text2)">200 SMA: ${n.sma_200.toLocaleString('en-IN')}</span>` : ''}`;
+    }
+
+    // Market banner
+    const banner = document.getElementById('market-banner');
+    banner.style.display = 'block';
+    if (data.market_open) {
+      banner.className = 'market-banner banner-open';
+      banner.textContent = 'Market Open \u2014 Auto-refreshing every 60s';
+    } else {
+      banner.className = 'market-banner banner-closed';
+      banner.textContent = 'Market Closed \u2014 Showing last available prices';
+    }
+
+    // Timestamp
+    document.getElementById('timestamp').textContent = 'Last updated: ' + data.timestamp;
+
+    // Cards
+    document.getElementById('active-grid').innerHTML = data.active.map(s => buildCard(s, 'active')).join('');
+    document.getElementById('swing-grid').innerHTML = data.swing.map(s => buildCard(s, 'swing')).join('');
+    document.getElementById('peg-grid').innerHTML = data.peg.map(s => buildCard(s, 'peg')).join('');
+
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('content').style.display = 'block';
+  } catch (e) {
+    console.error('Fetch error:', e);
+    document.getElementById('loading').innerHTML = '<span style="color:var(--red)">Failed to load data. Retrying...</span>';
+  }
+}
+
+fetchData();
+setInterval(fetchData, 60000);
+</script>
+</body>
+</html>
