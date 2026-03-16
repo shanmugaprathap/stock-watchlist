@@ -75,10 +75,31 @@ STOCKS = {
     ],
 }
 
+# ── Mutual Fund definitions ────────────────────────────────────────────────────
+
+MUTUAL_FUNDS = [
+    {"code": 145724, "name": "Tata Arbitrage Fund", "category": "Arbitrage",
+     "invested": 1000000, "current_val": 1002000, "platform": "—"},
+    {"code": 122639, "name": "Parag Parikh Flexi Cap", "category": "Flexicap",
+     "invested": 157000, "current_val": 158000, "platform": "—"},
+    {"code": 120828, "name": "Quant Small Cap", "category": "Small Cap",
+     "invested": 109000, "current_val": 97650, "platform": "—"},
+    {"code": 127042, "name": "Motilal Oswal Midcap", "category": "Midcap",
+     "invested": 75000, "current_val": 61870, "platform": "—"},
+    {"code": 118778, "name": "Nippon India Small Cap", "category": "Small Cap",
+     "invested": 50000, "current_val": 46100, "platform": "—"},
+    {"code": 119723, "name": "SBI ELSS Tax Saver", "category": "ELSS",
+     "invested": 30000, "current_val": 28960, "platform": "—"},
+    {"code": 147481, "name": "Parag Parikh ELSS Tax Saver", "category": "ELSS",
+     "invested": 30000, "current_val": 28510, "platform": "—"},
+]
+
 # ── In-memory cache ────────────────────────────────────────────────────────────
 
 _cache: dict = {"data": None, "timestamp": 0}
+_mf_cache: dict = {"data": None, "timestamp": 0}
 CACHE_TTL = 300  # 5 minutes — reduces Yahoo API calls
+MF_CACHE_TTL = 600  # 10 minutes — MF NAVs update once a day
 
 
 # ── Yahoo Finance direct HTTP fetcher with retry ──────────────────────────────
@@ -278,6 +299,157 @@ def is_market_open():
     return now.replace(hour=9, minute=15, second=0) <= now <= now.replace(hour=15, minute=30, second=0)
 
 
+# ── Mutual Fund helpers ────────────────────────────────────────────────────────
+
+AMFI_URL = "https://www.amfiindia.com/spages/NAVAll.txt"
+
+def fetch_amfi_navs(codes: list[int]) -> dict[int, float]:
+    """Fetch latest NAVs from AMFI for given scheme codes."""
+    try:
+        r = httpx.get(AMFI_URL, headers={"User-Agent": "Mozilla/5.0"},
+                      timeout=30, follow_redirects=True)
+        r.raise_for_status()
+        nav_map = {}
+        for line in r.text.split("\n"):
+            parts = line.split(";")
+            if len(parts) >= 5:
+                try:
+                    code = int(parts[0].strip())
+                    if code in codes:
+                        nav_map[code] = float(parts[4].strip())
+                except (ValueError, IndexError):
+                    continue
+        logger.info(f"AMFI: fetched {len(nav_map)}/{len(codes)} NAVs")
+        return nav_map
+    except Exception as e:
+        logger.error(f"AMFI fetch error: {e}")
+        return {}
+
+
+def get_nifty_technicals() -> dict | None:
+    """Get Nifty RSI, SMA, and % from high for lumpsum signals."""
+    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=20) as client:
+        chart = fetch_chart("^NSEI", client)
+        if not chart:
+            return None
+        quote = chart.get("indicators", {}).get("quote", [{}])[0]
+        closes = [c for c in quote.get("close", []) if c is not None]
+        highs = [h for h in quote.get("high", []) if h is not None]
+        if len(closes) < 20:
+            return None
+        closes_s = pd.Series(closes)
+        current = closes[-1]
+        high_52w = max(highs) if highs else current
+        return {
+            "level": round(current, 2),
+            "rsi": calc_rsi(closes_s),
+            "sma_50": round(float(closes_s.tail(50).mean()), 2) if len(closes_s) >= 50 else None,
+            "sma_200": round(float(closes_s.tail(200).mean()), 2) if len(closes_s) >= 200 else None,
+            "pct_from_high": round(((current - high_52w) / high_52w) * 100, 2),
+        }
+
+
+def lumpsum_signal(nifty: dict | None, category: str) -> tuple[str, str]:
+    """Return (signal, reason) for lumpsum decision.
+
+    Signals: DEPLOY NOW / GOOD ENTRY / SIP ONLY / WAIT
+    """
+    if not nifty or nifty.get("rsi") is None:
+        return "SIP ONLY", "Market data unavailable"
+
+    rsi = nifty["rsi"]
+    sma_200 = nifty.get("sma_200")
+    level = nifty["level"]
+    pct_from_high = abs(nifty["pct_from_high"])
+
+    # Arbitrage funds — always fine to deploy, they're market-neutral
+    if category == "Arbitrage":
+        return "DEPLOY NOW", "Arbitrage funds are market-neutral — safe anytime"
+
+    # For equity funds, use Nifty technicals
+    below_200sma = sma_200 and level < sma_200
+
+    if rsi < 35 and below_200sma and pct_from_high > 5:
+        return "DEPLOY NOW", f"Nifty oversold (RSI {rsi:.0f}), below 200 SMA, {pct_from_high:.0f}% off high"
+
+    if rsi < 45 and (below_200sma or pct_from_high > 3):
+        return "GOOD ENTRY", f"Nifty weak (RSI {rsi:.0f}), good dip-buy opportunity"
+
+    if rsi <= 60:
+        return "SIP ONLY", f"Nifty neutral (RSI {rsi:.0f}) — stick to SIP"
+
+    return "WAIT", f"Nifty heated (RSI {rsi:.0f}) — avoid lumpsum, continue SIP"
+
+
+def build_mf_response() -> dict:
+    """Build mutual fund holdings with live NAVs and lumpsum signals."""
+    codes = [f["code"] for f in MUTUAL_FUNDS]
+    nav_map = fetch_amfi_navs(codes)
+    nifty = get_nifty_technicals()
+
+    funds = []
+    total_invested = 0
+    total_current = 0
+
+    for f in MUTUAL_FUNDS:
+        nav = nav_map.get(f["code"])
+        invested = f["invested"]
+        # Estimate units from initial current_val and initial NAV
+        # On subsequent loads, recalculate current_val from live NAV
+        if nav:
+            # Units = initial_current_val / initial_nav (approximate)
+            # We use invested/avg_nav where avg_nav = invested / (current_val/nav_at_snapshot)
+            units = f["current_val"] / (f["current_val"] / (f["invested"] / f["invested"])) if nav else 0
+            # Better: units = current_val_at_time / nav_at_time
+            # Since we don't have exact units, derive from invested & approx avg_nav
+            avg_nav = nav * (f["invested"] / f["current_val"])
+            units = round(f["invested"] / avg_nav, 3)
+            current_val = round(units * nav, 2)
+        else:
+            nav = 0
+            units = 0
+            current_val = f["current_val"]
+            avg_nav = 0
+
+        pnl_abs = round(current_val - invested, 2)
+        pnl_pct = round(((current_val - invested) / invested) * 100, 2) if invested else 0
+
+        signal, reason = lumpsum_signal(nifty, f["category"])
+
+        total_invested += invested
+        total_current += current_val
+
+        funds.append({
+            "name": f["name"],
+            "category": f["category"],
+            "platform": f["platform"],
+            "code": f["code"],
+            "nav": round(nav, 4) if nav else None,
+            "units": units,
+            "invested": invested,
+            "current_val": round(current_val, 2),
+            "pnl_abs": pnl_abs,
+            "pnl_pct": pnl_pct,
+            "weight_pct": 0,  # filled below
+            "signal": signal,
+            "signal_reason": reason,
+        })
+
+    # Calculate weights
+    for f in funds:
+        f["weight_pct"] = round((f["current_val"] / total_current) * 100, 1) if total_current else 0
+
+    overall_pnl = round(((total_current - total_invested) / total_invested) * 100, 2) if total_invested else 0
+
+    return {
+        "funds": funds,
+        "total_invested": total_invested,
+        "total_current": round(total_current, 2),
+        "overall_pnl_pct": overall_pnl,
+        "nifty": nifty,
+    }
+
+
 # ── API endpoints ─────────────────────────────────────────────────────────────
 
 @app.get("/api/stocks")
@@ -349,6 +521,26 @@ def get_stocks():
     else:
         logger.warning("Empty result — not caching")
     logger.info(f"Response: active={len(active)}, swing={len(swing)}, peg={len(peg)}")
+    return result
+
+
+@app.get("/api/mutualfunds")
+def get_mutualfunds():
+    global _mf_cache
+    now = datetime.now(IST)
+
+    if _mf_cache["data"] and (time.time() - _mf_cache["timestamp"]) < MF_CACHE_TTL:
+        logger.info("MF: serving from cache")
+        result = _mf_cache["data"].copy()
+        result["timestamp"] = now.strftime("%Y-%m-%d %H:%M:%S IST")
+        return result
+
+    logger.info("MF: cache miss — fetching")
+    result = build_mf_response()
+    result["timestamp"] = now.strftime("%Y-%m-%d %H:%M:%S IST")
+
+    if result["funds"]:
+        _mf_cache = {"data": result, "timestamp": time.time()}
     return result
 
 

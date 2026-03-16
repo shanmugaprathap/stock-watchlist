@@ -83,10 +83,46 @@
     vertical-align: middle; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  /* Tabs */
+  .tabs { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 2px solid var(--border); }
+  .tab { padding: 10px 20px; cursor: pointer; font-size: 14px; font-weight: 600;
+    color: var(--text2); border-bottom: 2px solid transparent; margin-bottom: -2px;
+    transition: all 0.2s; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* MF specific */
+  .mf-summary { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 16px;
+    padding: 14px; background: var(--surface); border-radius: 10px; border: 1px solid var(--border); }
+  .mf-summary-item { text-align: center; }
+  .mf-summary-label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
+  .mf-summary-value { font-size: 20px; font-weight: 700; }
+  .mf-card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px; margin-bottom: 10px; }
+  .mf-card:hover { border-color: var(--blue); }
+  .mf-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .mf-name { font-size: 15px; font-weight: 700; }
+  .mf-category { font-size: 11px; color: var(--text2); }
+  .mf-metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 8px; font-size: 12px; }
+  .mf-metric { background: var(--surface2); padding: 6px 8px; border-radius: 6px; }
+  .mf-metric-label { color: var(--text2); font-size: 10px; text-transform: uppercase; }
+  .mf-metric-value { font-weight: 600; font-size: 14px; }
+  .signal-deploy-now { background: rgba(0,200,83,0.18); color: var(--green); }
+  .signal-good-entry { background: rgba(0,191,165,0.18); color: var(--teal); }
+  .signal-sip-only { background: rgba(255,214,0,0.15); color: var(--yellow); }
+  .signal-wait-mf { background: rgba(255,23,68,0.18); color: var(--red); }
+  .signal-reason { font-size: 11px; color: var(--text2); margin-top: 4px; font-style: italic; }
+
   @media (max-width: 600px) {
     .grid { grid-template-columns: 1fr; }
     .nifty-strip { justify-content: center; }
     .price { font-size: 18px; }
+    .tabs { overflow-x: auto; }
+    .tab { white-space: nowrap; padding: 8px 14px; font-size: 13px; }
+    .mf-metrics { grid-template-columns: 1fr 1fr; }
   }
 </style>
 </head>
@@ -100,14 +136,30 @@
   <div id="loading" class="loading"><span class="spinner"></span>Loading stock data...</div>
 
   <div id="content" style="display:none">
-    <h2>Active Positions</h2>
-    <div id="active-grid" class="grid"></div>
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('stocks')">Stocks</div>
+      <div class="tab" onclick="switchTab('mf')">Mutual Funds</div>
+    </div>
 
-    <h2>Swing Watchlist</h2>
-    <div id="swing-grid" class="grid"></div>
+    <div id="tab-stocks" class="tab-content active">
+      <h2>Active Positions</h2>
+      <div id="active-grid" class="grid"></div>
 
-    <h2>PEG Watchlist</h2>
-    <div id="peg-grid" class="grid"></div>
+      <h2>Swing Watchlist</h2>
+      <div id="swing-grid" class="grid"></div>
+
+      <h2>PEG Watchlist</h2>
+      <div id="peg-grid" class="grid"></div>
+    </div>
+
+    <div id="tab-mf" class="tab-content">
+      <div id="mf-loading" class="loading"><span class="spinner"></span>Loading mutual fund data...</div>
+      <div id="mf-content" style="display:none">
+        <div id="mf-summary" class="mf-summary"></div>
+        <h2>Holdings & Lumpsum Signals</h2>
+        <div id="mf-grid"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -232,6 +284,110 @@ async function fetchData() {
   } catch (e) {
     console.error('Fetch error:', e);
     document.getElementById('loading').innerHTML = '<span style="color:var(--red)">Failed to load data. Retrying...</span>';
+  }
+}
+
+// ── Tab switching ──
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.querySelector(`.tab-content#tab-${tab}`).classList.add('active');
+  event.target.classList.add('active');
+  if (tab === 'mf' && !mfLoaded) fetchMF();
+}
+
+// ── Mutual Funds ──
+let mfLoaded = false;
+
+const INRL = v => '\u20B9' + Number(v).toLocaleString('en-IN', {maximumFractionDigits: 0});
+
+function mfSignalCls(s) {
+  const map = {'DEPLOY NOW': 'signal-deploy-now', 'GOOD ENTRY': 'signal-good-entry',
+    'SIP ONLY': 'signal-sip-only', 'WAIT': 'signal-wait-mf'};
+  return 'signal ' + (map[s] || 'signal-sip-only');
+}
+
+function buildMFCard(f) {
+  const pnlCls = f.pnl_pct >= 0 ? 'pnl-positive' : 'pnl-negative';
+  return `<div class="mf-card">
+    <div class="mf-header">
+      <div>
+        <div class="mf-name">${f.name}</div>
+        <div class="mf-category">${f.category} ${f.platform !== '\u2014' ? '\u2022 ' + f.platform : ''}</div>
+      </div>
+      <div style="text-align:right">
+        <span class="${mfSignalCls(f.signal)}">${f.signal}</span>
+        <div class="signal-reason">${f.signal_reason}</div>
+      </div>
+    </div>
+    <div class="mf-metrics">
+      <div class="mf-metric">
+        <div class="mf-metric-label">NAV</div>
+        <div class="mf-metric-value">${f.nav ? '\u20B9' + f.nav.toFixed(2) : '\u2014'}</div>
+      </div>
+      <div class="mf-metric">
+        <div class="mf-metric-label">Invested</div>
+        <div class="mf-metric-value">${INRL(f.invested)}</div>
+      </div>
+      <div class="mf-metric">
+        <div class="mf-metric-label">Current</div>
+        <div class="mf-metric-value">${INRL(f.current_val)}</div>
+      </div>
+      <div class="mf-metric">
+        <div class="mf-metric-label">P&L</div>
+        <div class="mf-metric-value ${f.pnl_pct >= 0 ? 'change-up' : 'change-down'}">${INRL(f.pnl_abs)} (${PCT(f.pnl_pct)})</div>
+      </div>
+      <div class="mf-metric">
+        <div class="mf-metric-label">Weight</div>
+        <div class="mf-metric-value">${f.weight_pct.toFixed(1)}%</div>
+      </div>
+      <div class="mf-metric">
+        <div class="mf-metric-label">Units</div>
+        <div class="mf-metric-value">${f.units ? f.units.toFixed(1) : '\u2014'}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function fetchMF() {
+  try {
+    const res = await fetch('/api/mutualfunds');
+    const data = await res.json();
+
+    const s = data;
+    const pnlCls = s.overall_pnl_pct >= 0 ? 'change-up' : 'change-down';
+    document.getElementById('mf-summary').innerHTML = `
+      <div class="mf-summary-item">
+        <div class="mf-summary-label">Total Invested</div>
+        <div class="mf-summary-value">${INRL(s.total_invested)}</div>
+      </div>
+      <div class="mf-summary-item">
+        <div class="mf-summary-label">Current Value</div>
+        <div class="mf-summary-value">${INRL(s.total_current)}</div>
+      </div>
+      <div class="mf-summary-item">
+        <div class="mf-summary-label">Overall Return</div>
+        <div class="mf-summary-value ${pnlCls}">${PCT(s.overall_pnl_pct)}</div>
+      </div>
+      ${s.nifty ? `<div class="mf-summary-item">
+        <div class="mf-summary-label">Nifty RSI</div>
+        <div class="mf-summary-value" style="color:${s.nifty.rsi < 40 ? 'var(--green)' : s.nifty.rsi > 60 ? 'var(--red)' : 'var(--yellow)'}">${s.nifty.rsi.toFixed(1)}</div>
+      </div>
+      <div class="mf-summary-item">
+        <div class="mf-summary-label">Nifty vs 200 SMA</div>
+        <div class="mf-summary-value" style="color:${s.nifty.level < s.nifty.sma_200 ? 'var(--red)' : 'var(--green)'}">
+          ${s.nifty.level < s.nifty.sma_200 ? 'Below' : 'Above'} ${Math.abs(((s.nifty.level - s.nifty.sma_200) / s.nifty.sma_200) * 100).toFixed(1)}%
+        </div>
+      </div>` : ''}`;
+
+    document.getElementById('mf-grid').innerHTML = data.funds.map(buildMFCard).join('');
+
+    document.getElementById('mf-loading').style.display = 'none';
+    document.getElementById('mf-content').style.display = 'block';
+    mfLoaded = true;
+  } catch (e) {
+    console.error('MF fetch error:', e);
+    document.getElementById('mf-loading').innerHTML = '<span style="color:var(--red)">Failed to load MF data.</span>';
   }
 }
 
