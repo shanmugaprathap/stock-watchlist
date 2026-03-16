@@ -35,32 +35,32 @@ STOCKS = {
         {
             "symbol": "SILVERBEES", "name": "Silver ETF (SilverBees)",
             "entry": 248.99, "sl": 232, "t1": 262, "t2": 278,
-            "qty": None, "avg_cost": 248.99,
+            "qty": None, "avg_cost": 248.99, "peg": None,  # ETF — no PEG
         },
         {
             "symbol": "KARURVYSYA", "name": "Karur Vysya Bank",
             "entry": None, "sl": None, "t1": None, "t2": None,
-            "qty": 122, "avg_cost": 90.07, "add_alert": 265,
+            "qty": 122, "avg_cost": 90.07, "add_alert": 265, "peg": 0.50,
         },
     ],
     "swing": [
-        {"symbol": "JINDALSAW", "name": "Jindal SAW", "entry_low": 190, "entry_high": 195, "sl": 181, "t1": 215},
-        {"symbol": "VBL", "name": "Varun Beverages", "entry_low": None, "entry_high": None, "sl": None, "t1": None},
-        {"symbol": "BHARTIARTL", "name": "Bharti Airtel", "entry_low": None, "entry_high": None, "sl": None, "t1": None},
-        {"symbol": "MARUTI", "name": "Maruti Suzuki", "entry_low": None, "entry_high": None, "sl": None, "t1": None},
+        {"symbol": "JINDALSAW", "name": "Jindal SAW", "entry_low": 190, "entry_high": 195, "sl": 181, "t1": 215, "peg": 0.55},
+        {"symbol": "VBL", "name": "Varun Beverages", "entry_low": None, "entry_high": None, "sl": None, "t1": None, "peg": 1.96},
+        {"symbol": "BHARTIARTL", "name": "Bharti Airtel", "entry_low": None, "entry_high": None, "sl": None, "t1": None, "peg": 0.60},
+        {"symbol": "MARUTI", "name": "Maruti Suzuki", "entry_low": None, "entry_high": None, "sl": None, "t1": None, "peg": 1.30},
     ],
     "peg": [
         {"symbol": "HCLTECH", "name": "HCL Tech", "peg": 0.81},
         {"symbol": "COFORGE", "name": "Coforge", "peg": 0.60},
         {"symbol": "BPCL", "name": "BPCL", "peg": 0.40},
         {"symbol": "COALINDIA", "name": "Coal India", "peg": 0.58},
-        {"symbol": "BSE", "name": "BSE Ltd", "peg": 0.86},
+        {"symbol": "BSE", "name": "BSE Ltd", "peg": 0.76},
         {"symbol": "KARURVYSYA", "name": "Karur Vysya Bank", "peg": 0.50},
         {"symbol": "MTARTECH", "name": "MTAR Technologies", "peg": 0.76},
         {"symbol": "LUMAXIND", "name": "Lumax Industries", "peg": 1.13},
         {"symbol": "SCHNEIDER", "name": "Schneider Electric", "peg": 1.22},
-        {"symbol": "HAL", "name": "Hindustan Aeronautics", "peg": 1.05},
-        {"symbol": "BEL", "name": "Bharat Electronics", "peg": 1.40},
+        {"symbol": "HAL", "name": "Hindustan Aeronautics", "peg": 2.35},
+        {"symbol": "BEL", "name": "Bharat Electronics", "peg": 1.73},
     ],
 }
 
@@ -295,7 +295,7 @@ def get_stocks():
         item = {**data, "name": s["name"], "entry": s.get("entry"),
                 "avg_cost": s.get("avg_cost"), "qty": s.get("qty"),
                 "sl": s.get("sl"), "t1": s.get("t1"), "t2": s.get("t2"),
-                "add_alert": s.get("add_alert"), "signal": signal}
+                "add_alert": s.get("add_alert"), "peg": s.get("peg"), "signal": signal}
         if s.get("avg_cost") and s.get("qty"):
             inv = s["avg_cost"] * s["qty"]
             cur = data["price"] * s["qty"]
@@ -314,7 +314,7 @@ def get_stocks():
         signal = entry_signal_swing(data, s.get("entry_low"), s.get("entry_high"), s.get("sl"))
         swing.append({**data, "name": s["name"], "entry_low": s.get("entry_low"),
                        "entry_high": s.get("entry_high"), "sl": s.get("sl"),
-                       "t1": s.get("t1"), "signal": signal})
+                       "t1": s.get("t1"), "peg": s.get("peg"), "signal": signal})
 
     peg = []
     for s in STOCKS["peg"]:

@@ -134,6 +134,9 @@ function buildCard(s, type) {
     <div class="metric"><span class="metric-label">vs 50 SMA</span><span class="metric-value ${s.sma_50 ? smaCls(s.price, s.sma_50) : ''}">${smaLabel(s.price, s.sma_50)}</span></div>
     <div class="metric"><span class="metric-label">vs 200 SMA</span><span class="metric-value ${s.sma_200 ? smaCls(s.price, s.sma_200) : ''}">${smaLabel(s.price, s.sma_200)}</span></div>`;
 
+  // PEG ratio — shown for all stocks that have it
+  if (s.peg != null) metricsHtml += `<div class="metric"><span class="metric-label">PEG Ratio</span><span class="metric-value" style="color:${s.peg < 1 ? 'var(--green)' : s.peg < 1.5 ? 'var(--yellow)' : 'var(--red)'}">${s.peg.toFixed(2)}</span></div>`;
+
   if (type === 'active') {
     if (s.entry) metricsHtml += `<div class="metric"><span class="metric-label">Entry</span><span class="metric-value">${INR(s.entry)}</span></div>`;
     if (s.avg_cost) metricsHtml += `<div class="metric"><span class="metric-label">Avg Cost</span><span class="metric-value">${INR(s.avg_cost)}</span></div>`;
@@ -146,8 +149,6 @@ function buildCard(s, type) {
     if (s.entry_low && s.entry_high) metricsHtml += `<div class="metric"><span class="metric-label">Entry Zone</span><span class="metric-value">${INR(s.entry_low)} - ${INR(s.entry_high)}</span></div>`;
     if (s.sl) metricsHtml += `<div class="metric"><span class="metric-label">SL</span><span class="metric-value" style="color:var(--red)">${INR(s.sl)}</span></div>`;
     if (s.t1) metricsHtml += `<div class="metric"><span class="metric-label">T1</span><span class="metric-value" style="color:var(--green)">${INR(s.t1)}</span></div>`;
-  } else if (type === 'peg') {
-    if (s.peg != null) metricsHtml += `<div class="metric"><span class="metric-label">PEG Ratio</span><span class="metric-value" style="color:${s.peg < 1 ? 'var(--green)' : 'var(--yellow)'}">${s.peg.toFixed(2)}</span></div>`;
   }
 
   let pnlHtml = '';
