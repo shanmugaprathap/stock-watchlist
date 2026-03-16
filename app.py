@@ -45,7 +45,6 @@ STOCKS = {
     ],
     "swing": [
         {"symbol": "JINDALSAW", "name": "Jindal SAW", "entry_low": 190, "entry_high": 195, "sl": 181, "t1": 215},
-        {"symbol": "BPCL", "name": "BPCL", "entry_low": 320, "entry_high": 325, "sl": 305, "t1": 345},
         {"symbol": "VBL", "name": "Varun Beverages", "entry_low": None, "entry_high": None, "sl": None, "t1": None},
         {"symbol": "BHARTIARTL", "name": "Bharti Airtel", "entry_low": None, "entry_high": None, "sl": None, "t1": None},
         {"symbol": "MARUTI", "name": "Maruti Suzuki", "entry_low": None, "entry_high": None, "sl": None, "t1": None},
@@ -57,10 +56,11 @@ STOCKS = {
         {"symbol": "COALINDIA", "name": "Coal India", "peg": 0.58},
         {"symbol": "BSE", "name": "BSE Ltd", "peg": 0.86},
         {"symbol": "KARURVYSYA", "name": "Karur Vysya Bank", "peg": 0.50},
-        {"symbol": "UJJIVANSFB", "name": "Ujjivan SFB", "peg": 0.40},
         {"symbol": "MTARTECH", "name": "MTAR Technologies", "peg": 0.76},
         {"symbol": "LUMAXIND", "name": "Lumax Industries", "peg": 1.13},
         {"symbol": "SCHNEIDER", "name": "Schneider Electric", "peg": 1.22},
+        {"symbol": "HAL", "name": "Hindustan Aeronautics", "peg": 1.05},
+        {"symbol": "BEL", "name": "Bharat Electronics", "peg": 1.40},
     ],
 }
 
