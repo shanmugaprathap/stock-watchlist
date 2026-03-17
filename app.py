@@ -56,7 +56,7 @@ STOCKS = {
     ],
     "swing": [
         {"symbol": "JINDALSAW", "name": "Jindal SAW", "entry_low": 190, "entry_high": 195, "sl": 181, "t1": 215, "peg": 0.55},
-        {"symbol": "VBL", "name": "Varun Beverages", "entry_low": None, "entry_high": None, "sl": None, "t1": None, "peg": 1.96},
+        {"symbol": "VBL", "name": "Varun Beverages", "entry_low": 395, "entry_high": 410, "sl": 380, "t1": 460, "peg": 1.96},
         {"symbol": "BHARTIARTL", "name": "Bharti Airtel", "entry_low": None, "entry_high": None, "sl": None, "t1": None, "peg": 0.60},
         {"symbol": "MARUTI", "name": "Maruti Suzuki", "entry_low": None, "entry_high": None, "sl": None, "t1": None, "peg": 1.30},
     ],
@@ -258,16 +258,25 @@ def _process_nifty_chart(chart_data: dict) -> dict | None:
 
 # ── Signal logic ───────────────────────────────────────────────────────────────
 
-def entry_signal_swing(data, entry_low, entry_high, sl):
+def entry_signal_swing(data, entry_low, entry_high, sl, peg=None):
     price, rsi, sma_200, sma_50 = data["price"], data["rsi"], data["sma_200"], data["sma_50"]
     pct_from_high = abs(data["pct_from_high"])
+    low_52w = data.get("low_52w")
 
     if sl and price < sl:
         return "AVOID"
     if entry_low is None or entry_high is None:
-        return entry_signal_peg(data)
+        return entry_signal_peg(data, peg)
+
+    # PEG > 2 means overvalued — downgrade signals
+    peg_penalty = peg is not None and peg > 2
+
+    # Near 52W low adds conviction
+    near_52w_low = low_52w and price <= low_52w * 1.03
 
     if rsi and sma_200 and price <= entry_high * 1.02 and rsi < 45 and price < sma_200 and pct_from_high > 10:
+        if peg_penalty:
+            return "GOOD TO ADD"
         return "STRONG BUY"
 
     conditions = sum([
@@ -275,17 +284,27 @@ def entry_signal_swing(data, entry_low, entry_high, sl):
         price <= entry_high * 1.03,
         bool(sma_200 and sma_50 and sma_200 <= price <= sma_50),
         5 <= pct_from_high <= 10,
+        near_52w_low,
+        bool(peg and peg < 1),
     ])
     if conditions >= 2:
         return "GOOD TO ADD"
     return "WAIT"
 
 
-def entry_signal_peg(data):
+def entry_signal_peg(data, peg=None):
     rsi, sma_200, price = data["rsi"], data["sma_200"], data["price"]
+    low_52w = data.get("low_52w")
     if rsi is None:
         return "WAIT"
+
+    # PEG > 2 means overvalued — be cautious even if technicals look good
+    peg_penalty = peg is not None and peg > 2
+    near_52w_low = low_52w and price <= low_52w * 1.03
+
     if rsi < 40 and sma_200 and price < sma_200:
+        if peg_penalty and not near_52w_low:
+            return "GOOD TO ADD"
         return "STRONG BUY"
     if 40 <= rsi <= 55:
         return "GOOD TO ADD"
@@ -474,7 +493,7 @@ def get_stocks():
         if not data:
             continue
         signal = entry_signal_swing(data, s.get("entry") or s.get("entry_low"),
-                                     s.get("entry") or s.get("entry_high"), s.get("sl"))
+                                     s.get("entry") or s.get("entry_high"), s.get("sl"), s.get("peg"))
         item = {**data, "name": s["name"], "entry": s.get("entry"),
                 "avg_cost": s.get("avg_cost"), "qty": s.get("qty"),
                 "sl": s.get("sl"), "t1": s.get("t1"), "t2": s.get("t2"),
@@ -495,7 +514,7 @@ def get_stocks():
         data = sc.get(s["symbol"])
         if not data:
             continue
-        signal = entry_signal_swing(data, s.get("entry_low"), s.get("entry_high"), s.get("sl"))
+        signal = entry_signal_swing(data, s.get("entry_low"), s.get("entry_high"), s.get("sl"), s.get("peg"))
         swing.append({**data, "name": s["name"], "entry_low": s.get("entry_low"),
                        "entry_high": s.get("entry_high"), "sl": s.get("sl"),
                        "t1": s.get("t1"), "peg": s.get("peg"), "signal": signal})
@@ -506,7 +525,7 @@ def get_stocks():
         if not data:
             continue
         peg.append({**data, "name": s["name"], "peg": s["peg"],
-                     "signal": entry_signal_peg(data)})
+                     "signal": entry_signal_peg(data, s.get("peg"))})
 
     result = {
         "timestamp": now.strftime("%Y-%m-%d %H:%M:%S IST"),
