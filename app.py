@@ -41,7 +41,7 @@ STOCKS = {
         {
             "symbol": "SILVERBEES", "name": "Silver ETF (SilverBees)",
             "entry": 248.99, "sl": 232, "t1": 262, "t2": 278,
-            "qty": None, "avg_cost": 248.99, "peg": None,  # ETF — no PEG
+            "qty": 200, "avg_cost": 248.99, "peg": None,  # ETF — no PEG
         },
         {
             "symbol": "SILVERCASE", "name": "Silver Case ETF (IndMoney)",
